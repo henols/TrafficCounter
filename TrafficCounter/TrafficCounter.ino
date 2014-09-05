@@ -22,15 +22,34 @@
 
 /***************************************************************
  * 
- * Do-It-Yourself TRAFFIC COUNTER
+ * TRAFFIC COUNTER
  * 
  ***************************************************************/
+#include <avr/sleep.h>
+#include <avr/power.h>
 #include <Adafruit_CC3000.h>
 #include <SPI.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
-
 #include "utility/debug.h"
+
+#define PRESSURE_READING_PIN		A0
+#define CONFIGURE_BUTTON_PIN	8
+#define LED_INDICATOR_PIN		9
+#define PRESSURE_IRQ			0
+#define PRESSURE_IRQ_PIN		2
+
+#define MQTT_PORT 				1883
+#define PLACE_NAME_LENGTH      	32
+
+#define PUBLISH_DELAY      		3000
+#define CONNECTION_ALIVE_TIME	60000
+
+#define THRESHOLD       20 //change this amount if necessary. tunes sensitivity.
+#define WHEEL_DELAY     50 //number of milliseconds to create accurate readings for cars. prevents bounce.
+#define WHEEL_SPACEING  2.75 //average spacing between wheels of car (METERS)
+#define CAR_TIMEOUT     3000
+#define SPEED_BUFFER_SIZE     10
 
 // These are the interrupt and control pins
 #define ADAFRUIT_CC3000_IRQ   3  // MUST be an interrupt pin!
@@ -39,11 +58,9 @@
 #define ADAFRUIT_CC3000_CS    10
 // Use hardware SPI for the remaining pins
 // On an UNO, SCK = 13, MISO = 12, and MOSI = 11
-Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS,
-ADAFRUIT_CC3000_IRQ, ADAFRUIT_CC3000_VBAT, SPI_CLOCK_DIVIDER); // you can change this clock speed but DI
 
-#define WLAN_SSID       "myNetwork"        // cannot be longer than 32 characters!
-#define WLAN_PASS       "myPassword"
+#define WLAN_SSID       "C64"        // cannot be longer than 32 characters!
+#define WLAN_PASS       "feelgood"
 // Security can be WLAN_SEC_UNSEC, WLAN_SEC_WEP, WLAN_SEC_WPA or WLAN_SEC_WPA2
 #define WLAN_SECURITY   WLAN_SEC_WPA2
 
@@ -52,7 +69,7 @@ ADAFRUIT_CC3000_IRQ, ADAFRUIT_CC3000_VBAT, SPI_CLOCK_DIVIDER); // you can change
 
 char macHex[MAC_HEX_LENGTH];
 
-#define PLACE_NAME_LENGTH      32
+char mqttName[MAC_HEX_LENGTH + 3];
 char placeName[PLACE_NAME_LENGTH];
 
 char* topic = (char*) malloc(1);
@@ -60,42 +77,39 @@ char* topic = (char*) malloc(1);
 // byte server[] = { 172, 16, 0, 2 };
 char server[] = "aceone.se";
 
-PubSubClient client(server, 1883, callback, cc3000);
-
-#define THRESHOLD       20 //change this amount if necessary. tunes sensitivity.
-#define WHEEL_DELAY     50 //number of milliseconds to create accurate readings for cars. prevents bounce.
-#define WHEEL_SPACEING  2.7500 //average spacing between wheels of car (METERS)
-#define CAR_TIMEOUT     3000
+Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ, ADAFRUIT_CC3000_VBAT, SPI_CLOCK_DIVIDER);
+PubSubClient client(server, MQTT_PORT, callback, cc3000);
 
 int triggerValue; // pressure reading THRESHOLD for identifying a bike is pressing.
 int max = 0;
 int isMeasuring = 0;
 int countThis = 0;
 int strikeNumber = 0;
-float firstWheel = 0.0000000;
-float secondWheel = 0.0000000;
-float wheelTime = 0.0000000;
-float speed = 0.0000000;
+float firstWheel = 0.0;
+float secondWheel = 0.0;
+float wheelTime = 0.0;
+float speed = 0.0;
+float speed_buffer[SPEED_BUFFER_SIZE];
+int speed_buffer_start = 0;
+int speed_buffer_count = 0;
+
+unsigned long timeStamp;
 
 void setup() {
-	pinMode(A0, INPUT);
-	pinMode(8, INPUT_PULLUP);
-	pinMode(9, OUTPUT);
-	Serial.begin(115200);
+	pinMode(PRESSURE_READING_PIN, INPUT);
+//	pinMode(CONFIGURE_BUTTON_PIN, INPUT_PULLUP);
+	pinMode(LED_INDICATOR_PIN, OUTPUT);
+	pinMode(PRESSURE_IRQ_PIN, INPUT);
 
+	Serial.begin(115200);
+	 Serial.print("Free RAM: "); Serial.println(getFreeRam(), DEC);
+	 
 	Serial.println();
 	eeprom_read_string(0, placeName, PLACE_NAME_LENGTH);
-      cc3000.begin(false, true);
-  if (!cc3000.startSmartConfig())
-  {
-    Serial.println(F("SmartConfig failed"));
-    while(1);
-  }
-
 	buildTopic();
-	
+
 	Serial.print(F("Conecting to WIFI ."));
-	digitalWrite(9, HIGH);
+	digitalWrite(LED_INDICATOR_PIN, HIGH);
 
 	if (!cc3000.begin()) {
 		Serial.println();
@@ -106,30 +120,12 @@ void setup() {
 
 	Serial.print(F("."));
 
-	if (!cc3000.deleteProfiles()) {
-		while (1)
-			;
-	}
-
-	Serial.print(F("."));
-	char *ssid = WLAN_SSID; /* Max 32 chars */
-	if (!cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY)) {
-		while (1)
-			;
-	}
-
-	Serial.print(F("."));
-	while (!cc3000.checkDHCP()) {
-		Serial.print(F("."));
-		delay(100); // ToDo: Insert a DHCP timeout!
-	}
-
 	Serial.println(F(" OK"));
-	digitalWrite(9, LOW);
 
 	uint8_t macAddress[MAC_LENGTH];
 
 	cc3000.getMacAddress(macAddress);
+
 	bytesToHexString(macAddress, macHex, MAC_LENGTH);
 
 	// read local air pressure and create offset.
@@ -146,21 +142,26 @@ void setup() {
 
 	String tmpName = "TC-";
 	tmpName.concat(macHex);
-	char mqttName[tmpName.length()];
+	mqttName[tmpName.length()];
 	tmpName.toCharArray(mqttName, tmpName.length() + 1);
-	Serial.print("'");
-	Serial.print(mqttName);
-	Serial.println("'");
-	if (client.connect(mqttName)) {
-		client.publish("traffic/counter/start", mqttName);
-		client.publish("traffic/counter/place", placeName);
-		client.subscribe("traffic/counter/config");
-		Serial.print(F("Conneted to: "));
-		Serial.println(server);
-	}
-	Serial.print("Free RAM: ");
-	Serial.println(getFreeRam(), DEC);
+	Serial.print(F("Mqtt name: "));
+	Serial.println(mqttName);
 
+	while (!enableConnection()) {
+		delay(100);
+	}
+	timeStamp = millis();
+
+	digitalWrite(LED_INDICATOR_PIN, LOW);
+//	delay(10000);
+//	Serial.println(F("Shut down!"));
+//	shutdownConnection();
+//	delay(10000);
+//	Serial.println(F("Sleep now!"));
+//	delay(100);
+//	sleepNow();
+	 Serial.print("Free RAM: "); Serial.println(getFreeRam(), DEC);
+	 
 }
 
 void loop() {
@@ -190,21 +191,16 @@ void loop() {
 
 	//3 - TUBE IS RELEASED
 	if (analogRead(A0) < triggerValue - 1 && countThis == 0) { //released by either wheel
-		if (strikeNumber == 0 && isMeasuring == 1
-				&& (millis() - firstWheel > WHEEL_DELAY)) {
+		if (strikeNumber == 0 && isMeasuring == 1 && (millis() - firstWheel > WHEEL_DELAY)) {
 			strikeNumber = 1;
 		}
-		if (strikeNumber == 1 && isMeasuring == 0
-				&& (millis() - secondWheel > WHEEL_DELAY)) {
+		if (strikeNumber == 1 && isMeasuring == 0 && (millis() - secondWheel > WHEEL_DELAY)) {
 			countThis = 1;
 		}
 	}
 
 	//4 - PRESSURE READING IS ACCEPTED AND RECORDED
-	if ((analogRead(A0) < triggerValue - 1)
-			&& ((countThis == 1 && isMeasuring == 0)
-					|| ((millis() - firstWheel) > CAR_TIMEOUT)
-							&& isMeasuring == 1)) { //has been released for enough time.
+	if ((analogRead(A0) < triggerValue - 1) && ((countThis == 1 && isMeasuring == 0) || ((millis() - firstWheel) > CAR_TIMEOUT) && isMeasuring == 1)) { //has been released for enough time.
 		Serial.print(F("Pressure Reached = "));
 		Serial.println(max);
 		//Serial.print("time between wheels = ");
@@ -218,34 +214,246 @@ void loop() {
 		} else {
 			speed = 1.0;
 		}
-		char tmp[6];
-		dtostrf(speed, 1, 2, tmp);
-		if(client.connected()){
-			client.publish(topic, tmp);
-		}
-
+		publish(speed);
 		//RESET ALL VALUES
 		max = 0;
 		strikeNumber = 0;
 		countThis = 0;
 		isMeasuring = 0;
-
+	}
+	unsigned long ml = millis();
+	if (connected() && ml > timeStamp + CONNECTION_ALIVE_TIME) {
+		shutdownConnection();
+	}
+	if (!bufferEmpty() && ml > timeStamp + PUBLISH_DELAY) {
+		if (connected()) {
+			publishBuffer();
+		} else {
+			if (!enableConnection()) {
+				delay(100);
+			}
+		}
 	}
 }
 
-void buildTopic(){
-	Serial.print("Free RAM: ");
-	Serial.println(getFreeRam(), DEC);
+void publishBuffer() {
+	while(!bufferEmpty()){
+		float speed = bufferRead();
+		char tmp[6];
+		dtostrf(speed, 1, 2, tmp);
+		client.publish(topic, tmp);
+	}
+	timeStamp = millis();
+}
+
+void publish(float speed) {
+	timeStamp = millis();
+	if (connected()) {
+		char tmp[6];
+		dtostrf(speed, 1, 2, tmp);
+		client.publish(topic, tmp);
+	} else {
+		bufferWrite(speed);
+	}
+}
+
+int bufferFull() {
+	return speed_buffer_count == SPEED_BUFFER_SIZE;
+}
+
+int bufferEmpty() {
+	return speed_buffer_count == 0;
+}
+
+void bufferWrite(float speed) {
+	int end = (speed_buffer_start + speed_buffer_count) % SPEED_BUFFER_SIZE;
+	speed_buffer[end] = speed;
+	if (speed_buffer_count == SPEED_BUFFER_SIZE) {
+		speed_buffer_start = (speed_buffer_start + 1) % SPEED_BUFFER_SIZE; /* full, overwrite */
+		Serial.println(F("Buffer full ower writing"));
+	} else {
+		++speed_buffer_count;
+	}
+}
+
+float bufferRead() {
+	float speed = speed_buffer[speed_buffer_start];
+	speed_buffer_start = (speed_buffer_start + 1) % SPEED_BUFFER_SIZE;
+	--speed_buffer_count;
+	return speed;
+}
+
+void sleepNow()         // here we put the arduino to sleep
+{
+	// Turn off the ADC while asleep.
+	power_adc_disable();
+	power_all_disable();
+
+	/* Now is the time to set the sleep mode. In the Atmega8 datasheet
+	 * http://www.atmel.com/dyn/resources/prod_documents/doc2486.pdf on page 35
+	 * there is a list of sleep modes which explains which clocks and 
+	 * wake up sources are available in which sleep mode.
+	 *
+	 * In the avr/sleep.h file, the call names of these sleep modes are to be found:
+	 *
+	 * The 5 different modes are:
+	 *     SLEEP_MODE_IDLE         -the least power savings 
+	 *     SLEEP_MODE_ADC
+	 *     SLEEP_MODE_PWR_SAVE
+	 *     SLEEP_MODE_STANDBY
+	 *     SLEEP_MODE_PWR_DOWN     -the most power savings
+	 *
+	 * For now, we want as much power savings as possible, so we 
+	 * choose the according 
+	 * sleep mode: SLEEP_MODE_PWR_DOWN
+	 * 
+	 */
+	set_sleep_mode (SLEEP_MODE_PWR_DOWN);   // sleep mode is set here
+
+	sleep_enable();          // enables the sleep bit in the mcucr register
+							 // so sleep is possible. just a safety pin 
+
+	/* Now it is time to enable an interrupt. We do it here so an 
+	 * accidentally pushed interrupt button doesn't interrupt 
+	 * our running program. if you want to be able to run 
+	 * interrupt code besides the sleep function, place it in 
+	 * setup() for example.
+	 * 
+	 * In the function call attachInterrupt(A, B, C)
+	 * A   can be either 0 or 1 for interrupts on pin 2 or 3.   
+	 * 
+	 * B   Name of a function you want to execute at interrupt for A.
+	 *
+	 * C   Trigger mode of the interrupt pin. can be:
+	 *             LOW        a low level triggers
+	 *             CHANGE     a change in level triggers
+	 *             RISING     a rising edge of a level triggers
+	 *             FALLING    a falling edge of a level triggers
+	 *
+	 * In all but the IDLE sleep modes only LOW can be used.
+	 */
+
+	attachInterrupt(PRESSURE_IRQ, wakeUpNow, RISING); // use interrupt 0 (pin 2) and run function
+	// wakeUpNow when pin 2 gets LOW 
+
+	sleep_mode();            // here the device is actually put to sleep!!
+							 // THE PROGRAM CONTINUES FROM HERE AFTER WAKING UP
+
+	sleep_disable();         // first thing after waking from sleep:
+							 // disable sleep...
+	detachInterrupt(PRESSURE_IRQ);      // disables interrupt 0 on pin 2 so the 
+	// wakeUpNow code will not be executed 
+	// during normal running time.
+	power_all_enable();
+	Serial.print(F("Back from sleep"));
+
+}
+
+// Enable the CC3000 and connect to the wifi network.
+// Return true if enabled and connected, false otherwise.
+boolean enableConnection() {
+	Serial.println(F("Turning on CC3000."));
+
+	if (!digitalRead(ADAFRUIT_CC3000_VBAT)) {
+		unsigned long t = millis();
+		// Turn on the CC3000.
+		wlan_start(0);
+		Serial.print(F("CC3000 Started in "));
+		Serial.print(millis()-t);
+		Serial.println(F(" millis"));
+		return false;
+	}
+	if (!cc3000.checkConnected()) {
+		unsigned long t = millis();
+		// Connect to the AP.
+		if (!cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY)) {
+			// Couldn't connect for some reason.  Fail and move on so the hardware goes back to sleep and tries again later.
+			Serial.println(F("Failed!"));
+			return false;
+		}
+		Serial.print(F("Connected in "));
+		Serial.print(millis()-t);
+		Serial.println(F(" millis"));
+		return false;
+	}
+	// Wait for DHCP to be complete.  Make a best effort with 5 attempts, then fail and move on.
+	Serial.println(F("Request DHCP"));
+//	int attempts = 0;
+//	while (!cc3000.checkDHCP()) {
+//		if (attempts > 5) {
+//			Serial.println(F("DHCP didn't finish!"));
+//			return false;
+//		}
+//		attempts += 1;
+//		delay(100);
+//	}
+	if (!cc3000.checkDHCP()) {
+		Serial.println(F("DHCP didn't finish!"));
+		return false;
+	}
+	Serial.println(F("Finished DHCP"));
+
+	if (!client.connected()) {
+		if (!client.connect(mqttName)) {
+			Serial.println(F("MQTT Connetion error"));
+			return false;
+		}
+		client.publish("traffic/counter/start", mqttName);
+		client.publish("traffic/counter/place", placeName);
+		client.subscribe("traffic/counter/config");
+		Serial.print(F("Conneted to: "));
+		Serial.println(server);
+	}
+	// Return success, the CC3000 is enabled and connected to the network.
+	return true;
+}
+
+// Disconnect from wireless network and shut down the CC3000.
+void shutdownConnection() {
+	if (client.connected()) {
+		client.disconnect();
+		Serial.println(F("Disconnected MQTT"));
+	}
+	// Disconnect from the AP if connected.
+	// This might not be strictly necessary, but I found
+	// it was sometimes difficult to quickly reconnect to
+	// my AP if I shut down the CC3000 without first
+	// disconnecting from the network.
+	if (cc3000.checkConnected()) {
+		cc3000.disconnect();
+	}
+
+	// Wait for the CC3000 to finish disconnecting before
+	// continuing.
+	while (cc3000.checkConnected()) {
+		delay(100);
+	}
+	Serial.println(F("Disconnected CC3000"));
+
+	// Shut down the CC3000.
+	wlan_stop();
+
+	Serial.println(F("CC3000 shut down."));
+}
+
+boolean connected() {
+	return digitalRead(ADAFRUIT_CC3000_VBAT) && cc3000.checkConnected() && client.connected();
+}
+
+void buildTopic() {
 	free(topic);
-	Serial.print("Free RAM: ");
-	Serial.println(getFreeRam(), DEC);
 	String tmpTopic = "traffic/counter/car/";
 	tmpTopic.concat(placeName);
 	topic = (char*) malloc(tmpTopic.length());
 	tmpTopic.toCharArray(topic, tmpTopic.length() + 1);
-	Serial.print("Free RAM: ");
-	Serial.println(getFreeRam(), DEC);
-	Serial.println(topic);
+}
+
+void wakeUpNow()        // here the interrupt is handled after wakeup
+{
+	// execute code here after wake-up before returning to the loop() function
+	// timers and code using timers (serial.print and more...) will not work here.
+	// we don't really need to execute any special functions here, since we
+	// just want the thing to wake up
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
