@@ -31,7 +31,7 @@
 #include <SPI.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
-#include "utility/debug.h"
+// #include "utility/debug.h"
 
 #define PRESSURE_READING_PIN		A0
 #define CONFIGURE_BUTTON_PIN	8
@@ -109,30 +109,30 @@ void setup() {
   pinMode(PRESSURE_IRQ_PIN, INPUT);
 
   Serial.begin(115200);
-  Serial.print("Free RAM: "); 
-  Serial.println(getFreeRam(), DEC);
+  //  Serial.print("Free RAM: "); 
+  //  Serial.println(getFreeRam(), DEC);
 
-  Serial.println();
+ Serial.println();
   eeprom_read_string(0, placeName, PLACE_NAME_LENGTH);
   buildTopic();
 
-  Serial.print(F("Conecting to WIFI ."));
+ Serial.print(F("Conecting to WIFI ."));
   digitalWrite(LED_INDICATOR_PIN, HIGH);
 
   if (!cc3000.begin()) {
-    Serial.println();
-    Serial.println(F("Faild to begin"));
+   Serial.println();
+   Serial.println(F("Faild to begin"));
     errorMessage(2);            
   }
 
-  Serial.print(F("."));
+ Serial.print(F("."));
 
   if (!cc3000.deleteProfiles()) {
-    Serial.println(F("Failed!"));
+  //  Serial.println(F("Failed!"));
     errorMessage(3);            
   }
 
-  Serial.println(F(" OK"));
+ Serial.println(F(" OK"));
 
   uint8_t macAddress[MAC_LENGTH];
 
@@ -143,41 +143,41 @@ void setup() {
   // read local air pressure and create offset.
   triggerValue = analogRead(A0) + THRESHOLD;
   delay(1000);
-  Serial.println(F("Traffic Counter"));
-  Serial.println(F("___________________________________________________"));
-  Serial.println();
-  Serial.print(F("Place: "));
-  Serial.println(placeName);
-  Serial.print(F("Local Air Pressure: "));
-  Serial.println(triggerValue - THRESHOLD);
-  Serial.println(F("___________________________________________________"));
+ Serial.println(F("Traffic Counter"));
+ Serial.println(F("___________________________________________________"));
+ Serial.println();
+ Serial.print(F("Place: "));
+ Serial.println(placeName);
+ Serial.print(F("Air Pressure: "));
+ Serial.println(triggerValue - THRESHOLD);
+ Serial.println(F("___________________________________________________"));
 
   String tmpName = "TC-";
   tmpName.concat(macHex);
   mqttName[tmpName.length()];
   tmpName.toCharArray(mqttName, tmpName.length() + 1);
-  Serial.print(F("Mqtt name: "));
-  Serial.println(mqttName);
+ Serial.print(F("Mqtt name: "));
+ Serial.println(mqttName);
 
   while(!enableConnection()) {
-    Serial.print(F("Failed to enable connection"));
+  //  Serial.print(F("Failed to enable connection"));
     //while(1);
     shutdownConnection();
     delay(1000);
-    Serial.print(F("Retrying to connect"));
+   Serial.print(F("Retrying to connect"));
   }
 
 
   digitalWrite(LED_INDICATOR_PIN, LOW);
-	delay(1000);
-  	Serial.println(F("Shut down!"));
-  	shutdownConnection();
-  	delay(1000);
-  	Serial.println(F("Sleep now!"));
-  	delay(100);
-  	sleepNow();
-  Serial.print("Free RAM: "); 
-  Serial.println(getFreeRam(), DEC);
+  delay(1000);
+//  Serial.println(F("Shut down!"));
+  shutdownConnection();
+  delay(1000);
+//  Serial.println(F("Sleep now!"));
+  delay(100);
+  sleepNow();
+  //  Serial.print("Free RAM: "); 
+  //  Serial.println(getFreeRam(), DEC);
   initError = 0;
 }
 
@@ -209,13 +209,13 @@ void checkPressure(){
   //1 - TUBE IS PRESSURIZED INITIALLY
   if (analogRead(A0) > triggerValue) {
     if (strikeNumber == 0 && isMeasuring == 0) { // FIRST HIT
-      Serial.println();
-      Serial.println(F("Car HERE. "));
+     Serial.println();
+     Serial.println(F("Car HERE. "));
       firstWheel = millis();
       isMeasuring = 1;
     }
     if (strikeNumber == 1 && isMeasuring == 1) { // SECOND HIT
-      Serial.println(F("Car GONE."));
+     Serial.println(F("Car GONE."));
       secondWheel = millis();
       isMeasuring = 0;
     }
@@ -238,16 +238,16 @@ void checkPressure(){
 
   //4 - PRESSURE READING IS ACCEPTED AND RECORDED
   if ((analogRead(A0) < triggerValue - 1) && ((countThis == 1 && isMeasuring == 0) || ((millis() - firstWheel) > CAR_TIMEOUT) && isMeasuring == 1)) { //has been released for enough time.
-    Serial.print(F("Pressure Reached = "));
-    Serial.println(max);
+   Serial.print(F("Pressure Reached = "));
+   Serial.println(max);
     //Serial.print("time between wheels = ");
     wheelTime = ((secondWheel - firstWheel) / 3600000);
     //Serial.println(wheelTime);
     int time = ((millis() / 1000) / 60) + 1; // the number of seconds since first record.
     speed = (WHEEL_SPACEING / 1000) / wheelTime;
     if (speed > 0) {
-      Serial.print(F("Estimated Speed (km/h) = "));
-      Serial.println(speed);
+     Serial.print(F("Estimated Speed (km/h) = "));
+     Serial.println(speed);
     } 
     else {
       speed = 1.0;
@@ -264,7 +264,7 @@ void checkPressure(){
 void publishBuffer() {
   while(!bufferEmpty()){
     float speed = bufferRead();
-    publishToClient(speed)
+    publishToClient(speed);
   }
   timeStamp = millis();
 }
@@ -272,16 +272,17 @@ void publishBuffer() {
 void publish(float speed) {
   timeStamp = millis();
   if (bufferEmpty() && connected()) {
-    publishToClient(speed)
-  } else {
+    publishToClient(speed);
+  } 
+  else {
     bufferWrite(speed);
   }
 }
 
 void publishToClient(float speed) {
-    char tmp[6];
-    dtostrf(speed, 1, 2, tmp);
-    client.publish(topic, tmp);
+  char tmp[6];
+  dtostrf(speed, 1, 2, tmp);
+  client.publish(topic, tmp);
 }
 
 
@@ -298,7 +299,7 @@ void bufferWrite(float speed) {
   speed_buffer[end] = speed;
   if (speed_buffer_count == SPEED_BUFFER_SIZE) {
     speed_buffer_start = (speed_buffer_start + 1) % SPEED_BUFFER_SIZE; /* full, overwrite */
-    Serial.println(F("Buffer full ower writing"));
+  //  Serial.println(F("Buffer full ower writing"));
   } 
   else {
     ++speed_buffer_count;
@@ -374,7 +375,7 @@ void sleepNow()         // here we put the arduino to sleep
   // wakeUpNow code will not be executed 
   // during normal running time.
   power_all_enable();
-  Serial.print(F("Back from sleep"));
+//  Serial.print(F("Back from sleep"));
 
 }
 
@@ -406,7 +407,7 @@ ISR(TIMER1_COMPA_vect)          // timer compare interrupt service routine
 // Enable the CC3000 and connect to the wifi network.
 // Return true if enabled and connected, false otherwise.
 boolean enableConnection() {
-  Serial.println(F("Turning on CC3000."));
+ Serial.println(F("Turning on CC3000."));
 
   if(!initError){
     startTimeIntrrupt();
@@ -415,26 +416,26 @@ boolean enableConnection() {
     unsigned long t = millis();
     // Turn on the CC3000.
     wlan_start(0);
-    Serial.print(F("CC3000 Started in "));
-    Serial.print(millis()-t);
-    Serial.println(F(" millis"));
+   Serial.print(F("CC3000 Started in "));
+   Serial.print(millis()-t);
+   Serial.println(F(" millis"));
   }
   if (!cc3000.checkConnected()) {
-    Serial.print(F("Connectint to AP"));
+   Serial.print(F("Connectint to AP"));
     unsigned long t = millis();
     // Connect to the AP.
     if (!cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY)) {
       // Couldn't connect for some reason.  Fail and move on so the hardware goes back to sleep and tries again later.
-      Serial.println(F("Failed!"));
+     // Serial.println(F("Failed!"));
       if(initError){
         errorMessage(4);            
       }
-      Serial.println();
+     Serial.println();
       return false;
     }
-    Serial.print(F(" in "));
-    Serial.print(millis()-t);
-    Serial.println(F(" millis"));
+   Serial.print(F(" in "));
+   Serial.print(millis()-t);
+   Serial.println(F(" millis"));
   }
   /*
   Serial.println(F("Set static IP"));
@@ -462,12 +463,12 @@ boolean enableConnection() {
    */
 
 
-  Serial.print(F("Request DHCP"));
+ Serial.print(F("Request DHCP"));
   unsigned long t = millis();
   int attempts = 0;
   while (!cc3000.checkDHCP()) {
     if (attempts > 50) {
-      Serial.println(F(" DHCP didn't finish!"));
+     Serial.println(F(" DHCP didn't finish!"));
       //      if(initError){
       //         errorMessage(5);            
       //      }
@@ -476,18 +477,18 @@ boolean enableConnection() {
     attempts += 1;
     delay(200);
   }
-  Serial.print(" in ");
-  Serial.print(millis()-t);
-  Serial.println(F(" millis"));
+ Serial.print(" in ");
+ Serial.print(millis()-t);
+ Serial.println(F(" millis"));
   //	while (!cc3000.checkDHCP()) {
   //		delay(100);
   //	}
-  Serial.println(F("Finished DHCP"));
+ Serial.println(F("Finished DHCP"));
 
-  Serial.println(F("Connecting to MQTT server"));
+ Serial.println(F("Connecting to MQTT server"));
   if (!client.connected()) {
     if (!client.connect(mqttName)) {
-      Serial.println(F("MQTT Connetion error"));
+     Serial.println(F("MQTT Connetion error"));
       if(initError){
         errorMessage(6);            
       }
@@ -496,9 +497,9 @@ boolean enableConnection() {
     client.publish("traffic/counter/start", mqttName);
     client.publish("traffic/counter/place", placeName);
     client.subscribe("traffic/counter/config");
-    Serial.print(F("Conneted to: "));
-    Serial.print(server);
-    Serial.println();
+   Serial.print(F("Conneted to: "));
+   Serial.print(server);
+   Serial.println();
   }
 
   if(!initError){
@@ -514,7 +515,7 @@ boolean enableConnection() {
 void shutdownConnection() {
   if (client.connected()) {
     client.disconnect();
-    Serial.println(F("Disconnected MQTT"));
+  //  Serial.println(F("Disconnected MQTT"));
   }
   // Disconnect from the AP if connected.
   // This might not be strictly necessary, but I found
@@ -530,12 +531,12 @@ void shutdownConnection() {
   while (cc3000.checkConnected()) {
     delay(100);
   }
-  Serial.println(F("Disconnected CC3000"));
+//  Serial.println(F("Disconnected CC3000"));
 
   // Shut down the CC3000.
   wlan_stop();
 
-  Serial.println(F("CC3000 shut down."));
+ Serial.println(F("CC3000 shut down."));
 }
 
 boolean connected() {
@@ -697,5 +698,6 @@ void errorMessage(int nr){
     delay(1000);
   }
 }
+
 
 
